@@ -145,19 +145,6 @@ func GetTargets(context *generator.Context, args *args.Args) []generator.Target 
 	return targetList
 }
 
-func friendlyName(name string) string {
-	nameParts := strings.Split(name, "/")
-	// Reverse first part. e.g., io.k8s... instead of k8s.io...
-	if len(nameParts) > 0 && strings.Contains(nameParts[0], ".") {
-		parts := strings.Split(nameParts[0], ".")
-		for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
-			parts[i], parts[j] = parts[j], parts[i]
-		}
-		nameParts[0] = strings.Join(parts, ".")
-	}
-	return strings.Join(nameParts, ".")
-}
-
 func typeName(t *types.Type) string {
 	typePackage := t.Name.Package
 	return fmt.Sprintf("%s.%s", typePackage, t.Name.Name)
@@ -188,7 +175,7 @@ func targetForApplyConfigurationsPackage(outputDirBase, outputPkgBase, pkgSubdir
 					localPkg:     outputPkg,
 					groupVersion: gv,
 					applyConfig:  toGenerate,
-					imports:      generator.NewImportTracker(),
+					imports:      generator.NewImportTrackerForPackage(outputPkg),
 					refGraph:     refs,
 					openAPIType:  openAPIType,
 				})
@@ -211,7 +198,7 @@ func targetForUtils(outputDirBase, outputPkgBase string, boilerplate []byte, gro
 					OutputFilename: "utils.go",
 				},
 				outputPackage:        outputPkgBase,
-				imports:              generator.NewImportTracker(),
+				imports:              generator.NewImportTrackerForPackage(outputPkgBase),
 				groupVersions:        groupVersions,
 				typesForGroupVersion: applyConfigsForGroupVersion,
 				groupGoNames:         groupGoNames,
@@ -236,7 +223,7 @@ func targetForInternal(outputDirBase, outputPkgBase string, boilerplate []byte, 
 					OutputFilename: "internal.go",
 				},
 				outputPackage: outputPkgBase,
-				imports:       generator.NewImportTracker(),
+				imports:       generator.NewImportTrackerForPackage(outputPkg),
 				typeModels:    models,
 			})
 			return generators

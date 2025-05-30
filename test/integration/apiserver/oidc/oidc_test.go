@@ -39,7 +39,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/square/go-jose.v2"
+	"gopkg.in/go-jose/go-jose.v2"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -152,7 +152,7 @@ func runTests(t *testing.T, useAuthenticationConfig bool) {
 
 				if useAuthenticationConfig {
 					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1beta1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -285,7 +285,7 @@ jwt:
 
 				if useAuthenticationConfig {
 					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -349,7 +349,7 @@ jwt:
 
 				if useAuthenticationConfig {
 					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -406,6 +406,7 @@ jwt:
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, singleTestRunner(useAuthenticationConfig, rsaGenerateKey, tt))
 	}
 
@@ -465,11 +466,13 @@ func singleTestRunner[K utilsoidc.JosePrivateKey, L utilsoidc.JosePublicKey](
 	tt singleTest[K, L],
 ) func(t *testing.T) {
 	return func(t *testing.T) {
+		t.Parallel()
+
 		fn := func(t *testing.T, issuerURL, caCert string) string { return "" }
 		if useAuthenticationConfig {
 			fn = func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -502,6 +505,8 @@ jwt:
 }
 
 func TestUpdatingRefreshTokenInCaseOfExpiredIDToken(t *testing.T) {
+	t.Parallel()
+
 	type testRun[K utilsoidc.JosePrivateKey] struct {
 		name                            string
 		configureUpdatingTokenBehaviour func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey K)
@@ -544,6 +549,7 @@ func TestUpdatingRefreshTokenInCaseOfExpiredIDToken(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			expiredIDToken, stubRefreshToken := fetchExpiredToken(t, oidcServer, caCert, signingPrivateKey)
 			clientConfig := configureClientConfigForOIDC(t, apiServer.ClientConfig, defaultOIDCClientID, certPath, expiredIDToken, stubRefreshToken, oidcServer.URL())
@@ -596,7 +602,7 @@ func TestStructuredAuthenticationConfigCEL(t *testing.T) {
 			name: "username CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -623,6 +629,7 @@ jwt:
 						"sub": defaultOIDCClaimedUsername,
 						"aud": defaultOIDCClientID,
 						"exp": time.Now().Add(idTokenLifetime).Unix(),
+						"jti": "0123456789",
 					},
 					defaultStubAccessToken,
 					defaultStubRefreshToken,
@@ -635,13 +642,17 @@ jwt:
 			wantUser: &authenticationv1.UserInfo{
 				Username: "k8s-john_doe",
 				Groups:   []string{"system:authenticated"},
+				Extra: map[string]authenticationv1.ExtraValue{
+					// validates credential id is set correctly when jti claim is present
+					"authentication.kubernetes.io/credential-id": {"JTI=0123456789"},
+				},
 			},
 		},
 		{
 			name: "groups CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -690,7 +701,7 @@ jwt:
 			name: "claim validation rule fails",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -735,7 +746,7 @@ jwt:
 			name: "extra mapping CEL expressions are ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -771,6 +782,7 @@ jwt:
 						"aud": defaultOIDCClientID,
 						"exp": time.Now().Add(idTokenLifetime).Unix(),
 						"baz": "qux",
+						"jti": "0123456789",
 					},
 					defaultStubAccessToken,
 					defaultStubRefreshToken,
@@ -784,6 +796,8 @@ jwt:
 				Username: "k8s-john_doe",
 				Groups:   []string{"system:authenticated"},
 				Extra: map[string]authenticationv1.ExtraValue{
+					// validates credential id is set correctly and other extra fields are set
+					"authentication.kubernetes.io/credential-id": {"JTI=0123456789"},
 					"example.org/foo": {"bar"},
 					"example.org/baz": {"qux"},
 				},
@@ -793,7 +807,7 @@ jwt:
 			name: "uid CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -842,7 +856,7 @@ jwt:
 			name: "user validation rule fails",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -891,7 +905,7 @@ jwt:
 			name: "multiple audiences check with claim validation rule is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -939,10 +953,58 @@ jwt:
 				UID:      "1234",
 			},
 		},
+		{
+			name: "non-string jti claim doesn't result in authentication error",
+			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
+				return fmt.Sprintf(`
+apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: %s
+    audiences:
+    - %s
+    - another-audience
+    audienceMatchPolicy: MatchAny
+    certificateAuthority: |
+        %s
+  claimMappings:
+    username:
+      expression: "'k8s-' + claims.sub"
+`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+			},
+			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
+			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
+				idTokenLifetime := time.Second * 1200
+				oidcServer.TokenHandler().EXPECT().Token().RunAndReturn(utilsoidc.TokenHandlerBehaviorReturningPredefinedJWT(
+					t,
+					signingPrivateKey,
+					map[string]interface{}{
+						"iss": oidcServer.URL(),
+						"sub": defaultOIDCClaimedUsername,
+						"aud": defaultOIDCClientID,
+						"exp": time.Now().Add(idTokenLifetime).Unix(),
+						"jti": 1234,
+					},
+					defaultStubAccessToken,
+					defaultStubRefreshToken,
+				)).Times(1)
+			},
+			configureClient: configureClientFetchingOIDCCredentials,
+			assertErrFn: func(t *testing.T, errorToCheck error) {
+				assert.NoError(t, errorToCheck)
+			},
+			wantUser: &authenticationv1.UserInfo{
+				Username: "k8s-john_doe",
+				Groups:   []string{"system:authenticated"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			oidcServer, apiServer, signingPrivateKey, caCert, certPath := tt.configureInfrastructure(t, tt.authConfigFn, rsaGenerateKey)
 
 			tt.configureOIDCServerBehaviour(t, oidcServer, signingPrivateKey)
@@ -989,7 +1051,7 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 			name: "old valid config to new valid config",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1007,7 +1069,7 @@ jwt:
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1051,13 +1113,13 @@ jwt:
 			name: "old empty config to new valid config",
 			authConfigFn: func(t *testing.T, _, _ string) string {
 				return `
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 `
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1099,7 +1161,7 @@ jwt:
 			name: "old invalid config to new valid config",
 			authConfigFn: func(t *testing.T, issuerURL, _ string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1116,7 +1178,7 @@ jwt:
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1154,7 +1216,7 @@ jwt:
 			name: "old valid config to new structurally invalid config (should be ignored)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1172,7 +1234,7 @@ jwt:
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1212,7 +1274,7 @@ jwt:
 			name: "old valid config to new valid empty config (should cause tokens to stop working)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1230,7 +1292,7 @@ jwt:
 			},
 			newAuthConfigFn: func(t *testing.T, _, _ string) string {
 				return `
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 `
 			},
@@ -1255,7 +1317,7 @@ kind: AuthenticationConfiguration
 			name: "old valid config to new valid config with typo (should be ignored)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1273,7 +1335,7 @@ jwt:
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, _ string) string {
 				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1311,6 +1373,7 @@ jwt:
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			authenticationconfigmetrics.ResetMetricsForTest()
 			defer authenticationconfigmetrics.ResetMetricsForTest()
@@ -1472,7 +1535,9 @@ func TestStructuredAuthenticationDiscoveryURL(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			caCertContent, _, caFilePath, caKeyFilePath := generateCert(t)
 			signingPrivateKey, publicKey := rsaGenerateKey(t)
 			// set the issuer in the discovery document to issuer url (different from the discovery URL) to assert
@@ -1482,7 +1547,7 @@ func TestStructuredAuthenticationDiscoveryURL(t *testing.T) {
 			discoveryURL := strings.TrimSuffix(tt.discoveryURL(oidcServer.URL()), "/") + "/.well-known/openid-configuration"
 
 			authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:
@@ -1547,7 +1612,7 @@ func TestMultipleJWTAuthenticators(t *testing.T) {
 	oidcServer2 := utilsoidc.BuildAndRunTestServer(t, caFilePath2, caKeyFilePath2, "https://example.com")
 
 	authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1alpha1
+apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:

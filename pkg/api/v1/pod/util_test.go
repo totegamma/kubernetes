@@ -32,12 +32,14 @@ import (
 )
 
 func TestFindPort(t *testing.T) {
+	restartAlways := v1.ContainerRestartPolicyAlways
 	testCases := []struct {
-		name       string
-		containers []v1.Container
-		port       intstr.IntOrString
-		expected   int
-		pass       bool
+		name           string
+		containers     []v1.Container
+		initContainers []v1.Container
+		port           intstr.IntOrString
+		expected       int
+		pass           bool
 	}{{
 		name:       "valid int, no ports",
 		containers: []v1.Container{{}},
@@ -182,10 +184,69 @@ func TestFindPort(t *testing.T) {
 			expected: 11,
 			pass:     true,
 		},
+		{
+			name: "Sidecar initContainer named port",
+			initContainers: []v1.Container{{
+				RestartPolicy: &restartAlways,
+				Ports: []v1.ContainerPort{{
+					Name:          "a",
+					ContainerPort: 80,
+					HostPort:      -1,
+					Protocol:      "TCP",
+				}},
+			}},
+			port:     intstr.FromString("a"),
+			expected: 80,
+			pass:     true,
+		},
+		{
+			name: "Invalid(restartPolicy != Always) initContainer named port",
+			initContainers: []v1.Container{{
+				Ports: []v1.ContainerPort{{
+					Name:          "a",
+					ContainerPort: 80,
+					HostPort:      -1,
+					Protocol:      "TCP",
+				}},
+			}},
+			port:     intstr.FromString("a"),
+			expected: 0,
+			pass:     false,
+		},
+		{
+			name: "App and sidecar containers have the same named port, first app container port will be used",
+			initContainers: []v1.Container{{
+				RestartPolicy: &restartAlways,
+				Ports: []v1.ContainerPort{{
+					Name:          "a",
+					ContainerPort: 80,
+					HostPort:      -1,
+					Protocol:      "TCP",
+				}},
+			}},
+			containers: []v1.Container{{
+				Ports: []v1.ContainerPort{{
+					Name:          "a",
+					ContainerPort: 81,
+					HostPort:      -1,
+					Protocol:      "TCP",
+				}},
+			}, {
+				Ports: []v1.ContainerPort{{
+					Name:          "a",
+					ContainerPort: 82,
+					HostPort:      -1,
+					Protocol:      "TCP",
+				}},
+			}},
+			port:     intstr.FromString("a"),
+			expected: 81,
+			pass:     true,
+		},
 	}
 
 	for _, tc := range testCases {
-		port, err := FindPort(&v1.Pod{Spec: v1.PodSpec{Containers: tc.containers}},
+		port, err := FindPort(&v1.Pod{Spec: v1.PodSpec{Containers: tc.containers, InitContainers: tc.initContainers}},
 			&v1.ServicePort{Protocol: "TCP", TargetPort: tc.port})
 		if err != nil && tc.pass {
 			t.Errorf("unexpected error for %s: %v", tc.name, err)
@@ -360,6 +421,147 @@ func TestVisitContainers(t *testing.T) {
 				if c.SecurityContext != nil {
 					t.Errorf("VisitContainers() did not drop SecurityContext for ephemeral container %q", c.Name)
 				}
+			}
+		})
+	}
+}
+
+func TestContainerIter(t *testing.T) {
+	testCases := []struct {
+		desc           string
+		spec           *v1.PodSpec
+		wantContainers []string
+		mask           ContainerType
+	}{
+		{
+			desc:           "empty podspec",
+			spec:           &v1.PodSpec{},
+			wantContainers: []string{},
+			mask:           AllContainers,
+		},
+		{
+			desc: "regular containers",
+			spec: &v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1"},
+					{Name: "c2"},
+				},
+				InitContainers: []v1.Container{
+					{Name: "i1"},
+					{Name: "i2"},
+				},
+				EphemeralContainers: []v1.EphemeralContainer{
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e1"}},
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e2"}},
+				},
+			},
+			wantContainers: []string{"c1", "c2"},
+			mask:           Containers,
+		},
+		{
+			desc: "init containers",
+			spec: &v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1"},
+					{Name: "c2"},
+				},
+				InitContainers: []v1.Container{
+					{Name: "i1"},
+					{Name: "i2"},
+				},
+				EphemeralContainers: []v1.EphemeralContainer{
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e1"}},
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e2"}},
+				},
+			},
+			wantContainers: []string{"i1", "i2"},
+			mask:           InitContainers,
+		},
+		{
+			desc: "init + main containers",
+			spec: &v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1"},
+					{Name: "c2"},
+				},
+				InitContainers: []v1.Container{
+					{Name: "i1"},
+					{Name: "i2"},
+				},
+				EphemeralContainers: []v1.EphemeralContainer{
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e1"}},
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e2"}},
+				},
+			},
+			wantContainers: []string{"i1", "i2", "c1", "c2"},
+			mask:           InitContainers | Containers,
+		},
+		{
+			desc: "ephemeral containers",
+			spec: &v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1"},
+					{Name: "c2"},
+				},
+				InitContainers: []v1.Container{
+					{Name: "i1"},
+					{Name: "i2"},
+				},
+				EphemeralContainers: []v1.EphemeralContainer{
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e1"}},
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e2"}},
+				},
+			},
+			wantContainers: []string{"e1", "e2"},
+			mask:           EphemeralContainers,
+		},
+		{
+			desc: "all container types",
+			spec: &v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1"},
+					{Name: "c2"},
+				},
+				InitContainers: []v1.Container{
+					{Name: "i1"},
+					{Name: "i2"},
+				},
+				EphemeralContainers: []v1.EphemeralContainer{
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e1"}},
+					{EphemeralContainerCommon: v1.EphemeralContainerCommon{Name: "e2"}},
+				},
+			},
+			wantContainers: []string{"i1", "i2", "c1", "c2", "e1", "e2"},
+			mask:           AllContainers,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			gotContainers := []string{}
+			for c, containerType := range ContainerIter(tc.spec, tc.mask) {
+				gotContainers = append(gotContainers, c.Name)
+
+				switch containerType {
+				case InitContainers:
+					if c.Name[0] != 'i' {
+						t.Errorf("ContainerIter() yielded container type InitContainers for container %q", c.Name)
+					}
+				case Containers:
+					if c.Name[0] != 'c' {
+						t.Errorf("ContainerIter() yielded container type Containers for container %q", c.Name)
+					}
+				case EphemeralContainers:
+					if c.Name[0] != 'e' {
+						t.Errorf("ContainerIter() yielded container type EphemeralContainers for container %q", c.Name)
+					}
+				default:
+					t.Errorf("ContainerIter() yielded unknown container type %d", containerType)
+				}
+			}
+
+			if !cmp.Equal(gotContainers, tc.wantContainers) {
+				t.Errorf("ContainerIter() = %+v, want %+v", gotContainers, tc.wantContainers)
 			}
 		})
 	}

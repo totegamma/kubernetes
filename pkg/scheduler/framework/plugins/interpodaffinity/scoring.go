@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
@@ -43,7 +44,7 @@ type preScoreState struct {
 
 // Clone implements the mandatory Clone interface. We don't really copy the data since
 // there is no need for that.
-func (s *preScoreState) Clone() framework.StateData {
+func (s *preScoreState) Clone() fwk.StateData {
 	return s
 }
 
@@ -126,14 +127,10 @@ func (pl *InterPodAffinity) processExistingPod(
 // PreScore builds and writes cycle state used by Score and NormalizeScore.
 func (pl *InterPodAffinity) PreScore(
 	pCtx context.Context,
-	cycleState *framework.CycleState,
+	cycleState fwk.CycleState,
 	pod *v1.Pod,
 	nodes []*framework.NodeInfo,
 ) *framework.Status {
-	if len(nodes) == 0 {
-		// No nodes to score.
-		return framework.NewStatus(framework.Skip)
-	}
 
 	if pl.sharedLister == nil {
 		return framework.NewStatus(framework.Error, "empty shared lister in InterPodAffinity PreScore")
@@ -223,7 +220,7 @@ func (pl *InterPodAffinity) PreScore(
 	return nil
 }
 
-func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) {
+func getPreScoreState(cycleState fwk.CycleState) (*preScoreState, error) {
 	c, err := cycleState.Read(preScoreStateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %q from cycleState: %w", preScoreStateKey, err)
@@ -240,11 +237,7 @@ func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) 
 // The "score" returned in this function is the sum of weights got from cycleState which have its topologyKey matching with the node's labels.
 // it is normalized later.
 // Note: the returned "score" is positive for pod-affinity, and negative for pod-antiaffinity.
-func (pl *InterPodAffinity) Score(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	nodeInfo, err := pl.sharedLister.NodeInfos().Get(nodeName)
-	if err != nil {
-		return 0, framework.AsStatus(fmt.Errorf("failed to get node %q from Snapshot: %w", nodeName, err))
-	}
+func (pl *InterPodAffinity) Score(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) (int64, *framework.Status) {
 	node := nodeInfo.Node()
 
 	s, err := getPreScoreState(cycleState)
@@ -262,7 +255,7 @@ func (pl *InterPodAffinity) Score(ctx context.Context, cycleState *framework.Cyc
 }
 
 // NormalizeScore normalizes the score for each filteredNode.
-func (pl *InterPodAffinity) NormalizeScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
+func (pl *InterPodAffinity) NormalizeScore(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
 	s, err := getPreScoreState(cycleState)
 	if err != nil {
 		return framework.AsStatus(err)

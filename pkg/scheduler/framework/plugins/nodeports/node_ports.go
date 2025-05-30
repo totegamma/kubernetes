@@ -23,13 +23,17 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 	"k8s.io/kubernetes/pkg/scheduler/util"
 )
 
 // NodePorts is a plugin that checks if a node has free ports for the requested pod ports.
-type NodePorts struct{}
+type NodePorts struct {
+	enableSchedulingQueueHint bool
+}
 
 var _ framework.PreFilterPlugin = &NodePorts{}
 var _ framework.FilterPlugin = &NodePorts{}
@@ -50,7 +54,7 @@ const (
 type preFilterState []*v1.ContainerPort
 
 // Clone the prefilter state.
-func (s preFilterState) Clone() framework.StateData {
+func (s preFilterState) Clone() fwk.StateData {
 	// The state is not impacted by adding/removing existing pods, hence we don't need to make a deep copy.
 	return s
 }
@@ -80,7 +84,7 @@ func getContainerPorts(pods ...*v1.Pod) []*v1.ContainerPort {
 }
 
 // PreFilter invoked at the prefilter extension point.
-func (pl *NodePorts) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+func (pl *NodePorts) PreFilter(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) (*framework.PreFilterResult, *framework.Status) {
 	s := getContainerPorts(pod)
 	// Skip if a pod has no ports.
 	if len(s) == 0 {
@@ -95,7 +99,7 @@ func (pl *NodePorts) PreFilterExtensions() framework.PreFilterExtensions {
 	return nil
 }
 
-func getPreFilterState(cycleState *framework.CycleState) (preFilterState, error) {
+func getPreFilterState(cycleState fwk.CycleState) (preFilterState, error) {
 	c, err := cycleState.Read(preFilterStateKey)
 	if err != nil {
 		// preFilterState doesn't exist, likely PreFilter wasn't invoked.
@@ -112,16 +116,22 @@ func getPreFilterState(cycleState *framework.CycleState) (preFilterState, error)
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
 func (pl *NodePorts) EventsToRegister(_ context.Context) ([]framework.ClusterEventWithHint, error) {
+	// A note about UpdateNodeTaint/UpdateNodeLabel event:
+	// Ideally, it's supposed to register only Add because NodeUpdated event never means to have any free ports for the Pod.
+	// But, we may miss Node/Add event due to preCheck, and we decided to register UpdateNodeTaint | UpdateNodeLabel for all plugins registering Node/Add.
+	// See: https://github.com/kubernetes/kubernetes/issues/109437
+	nodeActionType := framework.Add | framework.UpdateNodeTaint | framework.UpdateNodeLabel
+	if pl.enableSchedulingQueueHint {
+		// preCheck is not used when QHint is enabled, and hence Update event isn't necessary.
+		nodeActionType = framework.Add
+	}
+
 	return []framework.ClusterEventWithHint{
 		// Due to immutable fields `spec.containers[*].ports`, pod update events are ignored.
 		{Event: framework.ClusterEvent{Resource: framework.Pod, ActionType: framework.Delete}, QueueingHintFn: pl.isSchedulableAfterPodDeleted},
-		// TODO(#110175): Ideally, it's supposed to register only NodeCreated, because NodeUpdated event never means to have any free ports for the Pod.
-		// But, we may miss NodeCreated event due to preCheck.
-		// See: https://github.com/kubernetes/kubernetes/issues/109437
-		// And, we can remove NodeUpdated event once https://github.com/kubernetes/kubernetes/issues/110175 is solved.
 		// We don't need the QueueingHintFn here because the scheduling of Pods will be always retried with backoff when this Event happens.
 		// (the same as Queue)
-		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: framework.Add | framework.Update}},
+		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: nodeActionType}},
 	}, nil
 }
 
@@ -134,7 +144,7 @@ func (pl *NodePorts) isSchedulableAfterPodDeleted(logger klog.Logger, pod *v1.Po
 	}
 
 	// If the deleted pod is unscheduled, it doesn't make the target pod schedulable.
-	if deletedPod.Spec.NodeName == "" {
+	if deletedPod.Spec.NodeName == "" && deletedPod.Status.NominatedNodeName == "" {
 		logger.V(4).Info("the deleted pod is unscheduled and it doesn't make the target pod schedulable", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deletedPod))
 		return framework.QueueSkip, nil
 	}
@@ -168,7 +178,7 @@ func (pl *NodePorts) isSchedulableAfterPodDeleted(logger klog.Logger, pod *v1.Po
 }
 
 // Filter invoked at the filter extension point.
-func (pl *NodePorts) Filter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+func (pl *NodePorts) Filter(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	wantPorts, err := getPreFilterState(cycleState)
 	if err != nil {
 		return framework.AsStatus(err)
@@ -199,6 +209,8 @@ func fitsPorts(wantPorts []*v1.ContainerPort, nodeInfo *framework.NodeInfo) bool
 }
 
 // New initializes a new plugin and returns it.
-func New(_ context.Context, _ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
-	return &NodePorts{}, nil
+func New(_ context.Context, _ runtime.Object, _ framework.Handle, fts feature.Features) (framework.Plugin, error) {
+	return &NodePorts{
+		enableSchedulingQueueHint: fts.EnableSchedulingQueueHint,
+	}, nil
 }

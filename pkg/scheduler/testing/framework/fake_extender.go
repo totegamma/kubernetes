@@ -26,6 +26,7 @@ import (
 	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/klog/v2"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	"k8s.io/kubernetes/pkg/scheduler/util"
@@ -124,9 +125,9 @@ func (pl *node2PrioritizerPlugin) Name() string {
 }
 
 // Score return score 100 if the given nodeName is "node2"; otherwise return score 10.
-func (pl *node2PrioritizerPlugin) Score(_ context.Context, _ *framework.CycleState, _ *v1.Pod, nodeName string) (int64, *framework.Status) {
+func (pl *node2PrioritizerPlugin) Score(_ context.Context, _ fwk.CycleState, _ *v1.Pod, nodeInfo *framework.NodeInfo) (int64, *framework.Status) {
 	score := 10
-	if nodeName == "node2" {
+	if nodeInfo.Node().Name == "node2" {
 		score = 100
 	}
 	return int64(score), nil

@@ -21,15 +21,16 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2/ktesting"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/backend/cache"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	plugintesting "k8s.io/kubernetes/pkg/scheduler/framework/plugins/testing"
-	"k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 )
 
@@ -99,11 +100,12 @@ func TestGCEDiskConflicts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPlugin(ctx, t)
 			cycleState := framework.NewCycleState()
-			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod)
+			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod, nil)
 			if diff := cmp.Diff(test.preFilterWantStatus, preFilterGotStatus); diff != "" {
 				t.Errorf("Unexpected PreFilter status (-want, +got): %s", diff)
 			}
@@ -173,11 +175,12 @@ func TestAWSDiskConflicts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPlugin(ctx, t)
 			cycleState := framework.NewCycleState()
-			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod)
+			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod, nil)
 			if diff := cmp.Diff(test.preFilterWantStatus, preFilterGotStatus); diff != "" {
 				t.Errorf("Unexpected PreFilter status (-want, +got): %s", diff)
 			}
@@ -253,11 +256,12 @@ func TestRBDDiskConflicts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPlugin(ctx, t)
 			cycleState := framework.NewCycleState()
-			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod)
+			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod, nil)
 			if diff := cmp.Diff(test.preFilterWantStatus, preFilterGotStatus); diff != "" {
 				t.Errorf("Unexpected PreFilter status (-want, +got): %s", diff)
 			}
@@ -333,11 +337,12 @@ func TestISCSIDiskConflicts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPlugin(ctx, t)
 			cycleState := framework.NewCycleState()
-			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod)
+			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod, nil)
 			if diff := cmp.Diff(test.preFilterWantStatus, preFilterGotStatus); diff != "" {
 				t.Errorf("Unexpected PreFilter status (-want, +got): %s", diff)
 			}
@@ -460,11 +465,12 @@ func TestAccessModeConflicts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPluginWithListers(ctx, t, test.existingPods, test.existingNodes, test.existingPVCs)
 			cycleState := framework.NewCycleState()
-			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod)
+			_, preFilterGotStatus := p.(framework.PreFilterPlugin).PreFilter(ctx, cycleState, test.pod, nil)
 			if diff := cmp.Diff(test.preFilterWantStatus, preFilterGotStatus); diff != "" {
 				t.Errorf("Unexpected PreFilter status (-want, +got): %s", diff)
 			}
@@ -660,8 +666,8 @@ func Test_isSchedulableAfterPodDeleted(t *testing.T) {
 
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
-			logger, _ := ktesting.NewTestContext(t)
-			ctx, cancel := context.WithCancel(context.Background())
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPluginWithListers(ctx, t, tc.existingPods, nil, []*v1.PersistentVolumeClaim{tc.existingPVC})
 
@@ -754,8 +760,8 @@ func Test_isSchedulableAfterPersistentVolumeClaimChange(t *testing.T) {
 
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
-			logger, _ := ktesting.NewTestContext(t)
-			ctx, cancel := context.WithCancel(context.Background())
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			p := newPluginWithListers(ctx, t, tc.existingPods, nil, []*v1.PersistentVolumeClaim{tc.newObj.(*v1.PersistentVolumeClaim)})
 

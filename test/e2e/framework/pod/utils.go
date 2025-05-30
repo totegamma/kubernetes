@@ -17,33 +17,32 @@ limitations under the License.
 package pod
 
 import (
-	"flag"
 	"fmt"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/test/e2e/framework"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	psaapi "k8s.io/pod-security-admission/api"
 	psapolicy "k8s.io/pod-security-admission/policy"
 	"k8s.io/utils/pointer"
 )
 
-// NodeOSDistroIs returns true if the distro is the same as `--node-os-distro`
-// the package framework/pod can't import the framework package (see #81245)
-// we need to check if the --node-os-distro=windows is set and the framework package
-// is the one that's parsing the flags, as a workaround this method is looking for the same flag again
-// TODO: replace with `framework.NodeOSDistroIs` when #81245 is complete
-func NodeOSDistroIs(distro string) bool {
-	var nodeOsDistro *flag.Flag = flag.Lookup("node-os-distro")
-	if nodeOsDistro != nil && nodeOsDistro.Value.String() == distro {
-		return true
-	}
-	return false
-}
-
+// This command runs an infinite loop, sleeping for 1 second in each iteration.
+// It sets up a trap to exit gracefully when a TERM signal is received.
+//
+// This is useful for testing scenarios where the container is terminated
+// with a zero exit code.
 const InfiniteSleepCommand = "trap exit TERM; while true; do sleep 1; done"
+
+// This command will cause the shell to remain in a sleep state indefinitely,
+// and it won't exit unless it receives a KILL signal.
+//
+// This is useful for testing scenarios where the container is terminated
+// with a non-zero exit code.
+const InfiniteSleepCommandWithoutGracefulShutdown = "while true; do sleep 100000; done"
 
 // GenerateScriptCmd generates the corresponding command lines to execute a command.
 func GenerateScriptCmd(command string) []string {
@@ -70,7 +69,7 @@ func GetDefaultTestImageID() imageutils.ImageID {
 // If the Node OS is windows, currently we return Agnhost image for Windows node
 // due to the issue of #https://github.com/kubernetes-sigs/windows-testing/pull/35.
 func GetTestImage(id imageutils.ImageID) string {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return imageutils.GetE2EImage(imageutils.Agnhost)
 	}
 	return imageutils.GetE2EImage(id)
@@ -80,7 +79,7 @@ func GetTestImage(id imageutils.ImageID) string {
 // If the Node OS is windows, currently we return Agnhost image for Windows node
 // due to the issue of #https://github.com/kubernetes-sigs/windows-testing/pull/35.
 func GetTestImageID(id imageutils.ImageID) imageutils.ImageID {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return imageutils.Agnhost
 	}
 	return id
@@ -90,7 +89,7 @@ func GetTestImageID(id imageutils.ImageID) imageutils.ImageID {
 // If the Node OS is windows, we return nill due to issue with invalid permissions set on projected volumes
 // https://github.com/kubernetes/kubernetes/issues/102849
 func GetDefaultNonRootUser() *int64 {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return nil
 	}
 	return pointer.Int64(DefaultNonRootUser)
@@ -100,7 +99,7 @@ func GetDefaultNonRootUser() *int64 {
 // If the Node OS is windows, currently we will ignore the inputs and return nil.
 // TODO: Will modify it after windows has its own security context
 func GeneratePodSecurityContext(fsGroup *int64, seLinuxOptions *v1.SELinuxOptions) *v1.PodSecurityContext {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return nil
 	}
 	return &v1.PodSecurityContext{
@@ -113,7 +112,7 @@ func GeneratePodSecurityContext(fsGroup *int64, seLinuxOptions *v1.SELinuxOption
 // If the Node OS is windows, currently we will ignore the inputs and return nil.
 // TODO: Will modify it after windows has its own security context
 func GenerateContainerSecurityContext(level psaapi.Level) *v1.SecurityContext {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return nil
 	}
 
@@ -137,7 +136,7 @@ func GenerateContainerSecurityContext(level psaapi.Level) *v1.SecurityContext {
 // GetLinuxLabel returns the default SELinuxLabel based on OS.
 // If the node OS is windows, it will return nil
 func GetLinuxLabel() *v1.SELinuxOptions {
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		return nil
 	}
 	return &v1.SELinuxOptions{
@@ -160,7 +159,7 @@ func GetRestrictedPodSecurityContext() *v1.PodSecurityContext {
 		SeccompProfile: &v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault},
 	}
 
-	if NodeOSDistroIs("windows") {
+	if framework.NodeOSDistroIs("windows") {
 		psc.WindowsOptions = &v1.WindowsSecurityContextOptions{}
 		psc.WindowsOptions.RunAsUserName = pointer.String(DefaultNonRootUserName)
 	}
@@ -203,7 +202,7 @@ func MixinRestrictedPodSecurity(pod *v1.Pod) error {
 		if pod.Spec.SecurityContext.SeccompProfile == nil {
 			pod.Spec.SecurityContext.SeccompProfile = &v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault}
 		}
-		if NodeOSDistroIs("windows") && pod.Spec.SecurityContext.WindowsOptions == nil {
+		if framework.NodeOSDistroIs("windows") && pod.Spec.SecurityContext.WindowsOptions == nil {
 			pod.Spec.SecurityContext.WindowsOptions = &v1.WindowsSecurityContextOptions{}
 			pod.Spec.SecurityContext.WindowsOptions.RunAsUserName = pointer.String(DefaultNonRootUserName)
 		}
@@ -251,6 +250,21 @@ func FindPodConditionByType(podStatus *v1.PodStatus, conditionType v1.PodConditi
 	for _, cond := range podStatus.Conditions {
 		if cond.Type == conditionType {
 			return &cond
+		}
+	}
+	return nil
+}
+
+// FindContainerInPod finds the container in a pod by its name
+func FindContainerInPod(pod *v1.Pod, containerName string) *v1.Container {
+	for _, container := range pod.Spec.InitContainers {
+		if container.Name == containerName {
+			return &container
+		}
+	}
+	for _, container := range pod.Spec.Containers {
+		if container.Name == containerName {
+			return &container
 		}
 	}
 	return nil

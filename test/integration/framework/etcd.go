@@ -24,8 +24,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -50,29 +52,19 @@ func getEtcdPath() (string, error) {
 	return exec.LookPath("etcd")
 }
 
-// getAvailablePort returns a TCP port that is available for binding.
-func getAvailablePort() (int, error) {
-	l, err := net.Listen("tcp", ":0")
-	if err != nil {
-		return 0, fmt.Errorf("could not bind to a port: %v", err)
-	}
-	// It is possible but unlikely that someone else will bind this port before we
-	// get a chance to use it.
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
 // startEtcd executes an etcd instance. The returned function will signal the
 // etcd process and wait for it to exit.
-func startEtcd(output io.Writer) (func(), error) {
-	etcdURL := env.GetEnvAsStringOrFallback("KUBE_INTEGRATION_ETCD_URL", "http://127.0.0.1:2379")
-	conn, err := net.Dial("tcp", strings.TrimPrefix(etcdURL, "http://"))
-	if err == nil {
-		klog.Infof("etcd already running at %s", etcdURL)
-		conn.Close()
-		return func() {}, nil
+func startEtcd(output io.Writer, forceCreate bool) (func(), error) {
+	if !forceCreate {
+		etcdURL := env.GetEnvAsStringOrFallback("KUBE_INTEGRATION_ETCD_URL", "http://127.0.0.1:2379")
+		conn, err := net.Dial("tcp", strings.TrimPrefix(etcdURL, "http://"))
+		if err == nil {
+			klog.Infof("etcd already running at %s", etcdURL)
+			_ = conn.Close()
+			return func() {}, nil
+		}
+		klog.V(1).Infof("could not connect to etcd: %v", err)
 	}
-	klog.V(1).Infof("could not connect to etcd: %v", err)
 
 	currentURL, stop, err := RunCustomEtcd("integration_test_etcd_data", nil, output)
 	if err != nil {
@@ -102,28 +94,30 @@ func RunCustomEtcd(dataDir string, customFlags []string, output io.Writer) (url 
 		fmt.Fprint(os.Stderr, installEtcd)
 		return "", nil, fmt.Errorf("could not find etcd in PATH: %v", err)
 	}
-	etcdPort, err := getAvailablePort()
-	if err != nil {
-		return "", nil, fmt.Errorf("could not get a port: %v", err)
-	}
-	customURL := fmt.Sprintf("http://127.0.0.1:%d", etcdPort)
-
-	klog.Infof("starting etcd on %s", customURL)
-
 	etcdDataDir, err := os.MkdirTemp(os.TempDir(), dataDir)
 	if err != nil {
 		return "", nil, fmt.Errorf("unable to make temp etcd data dir %s: %v", dataDir, err)
 	}
-	klog.Infof("storing etcd data in: %v", etcdDataDir)
+	etcdSocketPath := path.Join(etcdDataDir, "etcd.sock")
+	customURL := "unix://" + etcdSocketPath
 
+	klog.V(2).InfoS("starting etcd", "url", customURL, "dataDir", etcdDataDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	args := []string{
 		"--data-dir",
 		etcdDataDir,
 		"--listen-client-urls",
 		customURL,
+		// This should be how clients connect to etcd, but https://github.com/etcd-io/etcd/pull/12469
+		// apparently was incomplete: trying to pass a Unix Domain URL here is rejected by ectd 3.15.13 with
+		//    --advertise-client-urls "unix:///tmp/etcd.sock" must be "host:port" (missing port in address)
+		//
+		// We don't need to advertise the correct address. To prevent connecting to the default URL
+		// in the unlikely case that something does use this URL after all, an invalid URL is set here.
 		"--advertise-client-urls",
-		customURL,
+		"http://127.0.0.111:0",
+		// With :0 we let the kernel pick a unique port. We don't care which port this will be,
+		// no other peer is going to connect.
 		"--listen-peer-urls",
 		"http://127.0.0.1:0",
 		"-log-level",
@@ -144,17 +138,23 @@ func RunCustomEtcd(dataDir string, customFlags []string, output io.Writer) (url 
 		// try to exit etcd gracefully
 		defer cancel()
 		cmd.Process.Signal(syscall.SIGTERM)
+		var wg sync.WaitGroup
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			select {
 			case <-ctx.Done():
-				klog.Infof("etcd exited gracefully, context cancelled")
+				klog.V(6).InfoS("etcd exited gracefully, context cancelled")
 			case <-time.After(5 * time.Second):
 				klog.Infof("etcd didn't exit in 5 seconds, killing it")
 				cancel()
 			}
 		}()
 		err := cmd.Wait()
-		klog.Infof("etcd exit status: %v", err)
+		klog.V(2).InfoS("etcd exited", "err", err)
+		// Tell goroutine that we are done.
+		cancel()
+		wg.Wait()
 		err = os.RemoveAll(etcdDataDir)
 		if err != nil {
 			klog.Warningf("error during etcd cleanup: %v", err)
@@ -169,7 +169,7 @@ func RunCustomEtcd(dataDir string, customFlags []string, output io.Writer) (url 
 	const pollCount = int32(300)
 
 	for i <= pollCount {
-		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(customURL, "http://"), 1*time.Second)
+		conn, err := net.DialTimeout("unix", etcdSocketPath, 1*time.Second)
 		if err == nil {
 			conn.Close()
 			break
@@ -217,7 +217,7 @@ func EtcdMain(tests func() int) {
 		goleak.IgnoreTopFunction("github.com/moby/spdystream.(*Connection).shutdown"),
 	)
 
-	stop, err := startEtcd(nil)
+	stop, err := startEtcd(nil, false)
 	if err != nil {
 		klog.Fatalf("cannot run integration tests: unable to start etcd: %v", err)
 	}
@@ -247,8 +247,8 @@ func GetEtcdURL() string {
 //
 // Starting etcd multiple times per test run instead of once with EtcdMain
 // provides better separation between different tests.
-func StartEtcd(tb testing.TB, etcdOutput io.Writer) {
-	stop, err := startEtcd(etcdOutput)
+func StartEtcd(tb testing.TB, etcdOutput io.Writer, forceCreate bool) {
+	stop, err := startEtcd(etcdOutput, forceCreate)
 	if err != nil {
 		tb.Fatalf("unable to start etcd: %v", err)
 	}
